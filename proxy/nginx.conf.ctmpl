@@ -1,0 +1,110 @@
+user nginx;
+worker_processes auto;
+worker_rlimit_nofile 100000;
+
+error_log /dev/stderr;
+
+pid /var/run/nginx.pid;
+
+events {
+  worker_connections  8192;
+  multi_accept on;
+  use epoll;
+}
+
+http {
+
+  {{ range $service := services }} {{ if in .Tags "reverse-proxy" }}
+  upstream {{ $service.Name }} {
+    {{ range service $service.Name }}
+    server {{.Address}}:{{.Port}} max_fails=3 fail_timeout=60 weight=1;
+    {{ else }}
+    server 127.0.0.1:65535; # force 502
+    {{ end }}
+  }
+  {{ end }}{{ end }}
+
+  include /etc/nginx/mime.types;
+  default_type application/octet-stream;
+
+  log_format ltsv 'time:$time_iso8601\t'
+                  'remote_addr:$remote_addr\t'
+                  'request_method:$request_method\t'
+                  'request_length:$request_length\t'
+                  'request_uri:$request_uri\t'
+                  'https:$https\t'
+                  'uri:$uri\t'
+                  'query_string:$query_string\t'
+                  'status:$status\t'
+                  'bytes_sent:$bytes_sent\t'
+                  'body_bytes_sent:$body_bytes_sent\t'
+                  'referer:$http_referer\t'
+                  'useragent:$http_user_agent\t'
+                  'forwardedfor:$http_x_forwarded_for\t'
+                  'request_time:$request_time\t'
+                  'upstream_response_time:$upstream_response_time';
+
+  access_log /dev/stderr combined;
+
+  include /etc/nginx/conf.d/*.conf;
+
+  sendfile on;
+  tcp_nopush on;
+
+  keepalive_timeout 120;
+
+  gzip on;
+  gzip_http_version 1.1;
+  gzip_comp_level 5;
+  gzip_min_length    256;
+  gzip_proxied       any;
+  gzip_vary          on;
+  gzip_types
+    application/atom+xml
+    application/javascript
+    application/json
+    application/rss+xml
+    application/vnd.ms-fontobject
+    application/x-font-ttf
+    application/x-web-app-manifest+json
+    application/xhtml+xml
+    application/xml
+    font/opentype
+    image/svg+xml
+    image/x-icon
+    text/css
+    text/plain
+    text/x-component;
+
+  server_tokens off;
+
+  server {
+    listen 80;
+
+    location / {
+      return 404;
+    }
+  }
+
+  {{ range $service := services }} {{ if in .Tags "reverse-proxy" }}
+  server {
+    listen 80;
+    server_name "{{ $service.Name | replaceAll "-" "." }}";
+
+    location / { 
+      {{ if in .Tags "websocket" }}
+      proxy_http_version 1.1;
+      proxy_set_header Upgrade $http_upgrade;
+      proxy_set_header Connection "upgrade";
+      proxy_read_timeout 86400;
+      {{ end }}
+      proxy_pass http://{{ $service.Name }};    
+      proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+      proxy_set_header X-Real-IP $remote_addr;
+      proxy_set_header Host $host;
+      client_max_body_size 128m;
+    }   
+  }
+  {{ end }}{{ end }}
+
+}
